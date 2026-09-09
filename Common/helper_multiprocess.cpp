@@ -185,25 +185,32 @@ int ipcCreateSocket(ipcHandle *&handle, const char *name,
     return -1;
   }
 
-  unlink(name);
-  bzero(&servaddr, sizeof(servaddr));
-  servaddr.sun_family = AF_UNIX;
+  char path_name[sizeof(servaddr.sun_path)];
 
-  size_t len = strlen(name);
-  if (len > (sizeof(servaddr.sun_path) - 1)) {
+  // Create unique name for the socket with path if SOCK_FOLDER is set.
+  int written = snprintf(path_name, sizeof(path_name), "%s/%u",
+                         getSocketFolder().c_str(), getpid());
+  if (written < 0 || (size_t)written >= sizeof(path_name)) {
     perror("IPC failure: Cannot bind provided name to socket. Name too large");
+    close(server_fd);
+    delete handle;
+    handle = NULL;
     return -1;
   }
 
-  strncpy(servaddr.sun_path, name, len);
+  unlink(path_name);
+  memset(&servaddr, 0, sizeof(servaddr));
+  servaddr.sun_family = AF_UNIX;
+
+  strncpy(servaddr.sun_path, path_name, sizeof(servaddr.sun_path) - 1);
 
   if (bind(server_fd, (struct sockaddr *)&servaddr, SUN_LEN(&servaddr)) < 0) {
     perror("IPC failure: Binding socket failed");
     return -1;
   }
 
-  handle->socketName = new char[strlen(name) + 1];
-  strcpy(handle->socketName, name);
+  handle->socketName = new char[strlen(path_name) + 1];
+  strcpy(handle->socketName, path_name);
   handle->socket = server_fd;
   return 0;
 }
@@ -219,13 +226,21 @@ int ipcOpenSocket(ipcHandle *&handle) {
     perror("IPC failure:Socket creation error");
     return -1;
   }
-
-  bzero(&cliaddr, sizeof(cliaddr));
+  
+  memset(&cliaddr, 0, sizeof(cliaddr));
   cliaddr.sun_family = AF_UNIX;
-  char temp[10];
+  char temp[sizeof(cliaddr.sun_path)];
 
-  // Create unique name for the socket.
-  sprintf(temp, "%u", getpid());
+  // Create unique name for the socket with path if SOCK_FOLDER is set.
+  int written = snprintf(temp, sizeof(temp), "%s/%u", getSocketFolder().c_str(),
+                         getpid());
+  if (written < 0 || (size_t)written >= sizeof(temp)) {
+    perror("IPC failure: Cannot bind provided name to socket. Name too large");
+    close(sock);
+    delete handle;
+    handle = NULL;
+    return -1;
+  }
 
   strcpy(cliaddr.sun_path, temp);
   if (bind(sock, (struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0) {
@@ -326,7 +341,7 @@ int ipcSendDataToServer(ipcHandle *handle, const char *serverName,
   ssize_t sendResult;
   struct sockaddr_un serveraddr;
 
-  bzero(&serveraddr, sizeof(serveraddr));
+  memset(&serveraddr, 0, sizeof(serveraddr));
   serveraddr.sun_family = AF_UNIX;
   strncpy(serveraddr.sun_path, serverName, sizeof(serveraddr.sun_path) - 1);
 
@@ -359,10 +374,16 @@ int ipcSendShareableHandle(ipcHandle *handle,
   socklen_t len = sizeof(cliaddr);
 
   // Construct client address to send this SHareable handle to
-  bzero(&cliaddr, sizeof(cliaddr));
+  memset(&cliaddr, 0, sizeof(cliaddr));
   cliaddr.sun_family = AF_UNIX;
-  char temp[10];
-  sprintf(temp, "%u", process);
+  char temp[sizeof(cliaddr.sun_path)];
+  int written =
+      snprintf(temp, sizeof(temp), "%s/%u", getSocketFolder().c_str(), process);
+  if (written < 0 || (size_t)written >= sizeof(temp)) {
+    perror("IPC failure: Cannot address client socket. Name too large");
+    free(control_un.control);
+    return -1;
+  }
   strcpy(cliaddr.sun_path, temp);
   len = sizeof(cliaddr);
 
